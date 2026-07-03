@@ -1,6 +1,6 @@
 name=CJS B42 Body Location Compat
 id=cjsB42BodyLocationCompat
-description=Keeps active custom B42 body locations and legacy loot selector IDs registered.
+description=Keeps active custom B42 body locations and legacy loot selector IDs registered, and reports unsafe zombie visuals without deleting them.
 poster=poster.png
 author=CJ Storrs
 versionMin=42.0.0

@@ -76,6 +76,7 @@ local itemPickInfoIds = {
 	"ATA2InteractiveTrunkRoofRack",
 }
 local registerCombatHooks
+local inventoryItemCache = {}
 
 local function warnOnce(key, message)
 	if warned[key] then
@@ -222,38 +223,86 @@ local function getWearLocation(bodyLocation, canBeEquipped)
 	return canBeEquipped
 end
 
+local function getInventoryItem(fullType)
+	if fullType == nil or instanceItem == nil then
+		return nil
+	end
+
+	if inventoryItemCache[fullType] == false then
+		return nil
+	end
+
+	if inventoryItemCache[fullType] == nil then
+		local item = instanceItem(fullType)
+		inventoryItemCache[fullType] = item or false
+	end
+
+	return inventoryItemCache[fullType] ~= false and inventoryItemCache[fullType] or nil
+end
+
 local function getVisualInfo(visual)
 	local fullType = visual and visual:getItemType() or nil
 	local scriptItem = getScriptItem(fullType)
+	local inventoryItem = getInventoryItem(fullType)
 
 	local bodyLocation = nil
 	local canBeEquipped = nil
-	if scriptItem ~= nil then
-		bodyLocation = scriptItem:getBodyLocation()
-		canBeEquipped = scriptItem.canBeEquipped
+	if inventoryItem ~= nil then
+		if inventoryItem:IsClothing() then
+			bodyLocation = inventoryItem:getBodyLocation()
+		else
+			canBeEquipped = inventoryItem:canBeEquipped()
+		end
 	end
+	local wearLocation = getWearLocation(bodyLocation, canBeEquipped)
 
 	return {
 		fullType = fullType,
 		scriptItem = scriptItem,
+		inventoryItem = inventoryItem,
 		bodyLocation = bodyLocation,
 		canBeEquipped = canBeEquipped,
-		wearLocation = getWearLocation(bodyLocation, canBeEquipped),
+		wearLocation = wearLocation,
+		wearKnown = locationKnown(wearLocation),
 	}
 end
 
-local sanitizedVisualCount = 0
-local sanitizedVisualLogLimit = 40
+local unsafeVisualErrorCount = 0
+local unsafeVisualErrorLimit = 40
+local unsafeVisualErrors = {}
 
-local function shouldRemoveVisual(info)
+local function shouldReportVisual(info)
 	if info == nil or info.scriptItem == nil then
 		return false
 	end
 
-	return locationKnown(info.wearLocation) ~= "known"
+	return info.inventoryItem == nil or info.wearKnown ~= "known"
 end
 
-local function sanitizeZombieVisuals(zombie, reason)
+local function reportUnsafeVisual(info, reason)
+	local key = tostring(info.fullType) .. ":" .. tostring(info.wearKnown)
+	if unsafeVisualErrors[key] then
+		return
+	end
+	unsafeVisualErrors[key] = true
+
+	if unsafeVisualErrorCount >= unsafeVisualErrorLimit then
+		return
+	end
+	unsafeVisualErrorCount = unsafeVisualErrorCount + 1
+
+	error("ERROR: [" .. MOD_ID .. "] unsafe zombie visual during " .. tostring(reason)
+		.. " type=" .. tostring(info.fullType)
+		.. " bodyLocation=" .. tostring(info.bodyLocation)
+		.. " canBeEquipped=" .. tostring(info.canBeEquipped)
+		.. " wearLocation=" .. tostring(info.wearLocation)
+		.. " wearKnown=" .. tostring(info.wearKnown)
+		.. " inventoryItem=" .. tostring(info.inventoryItem)
+		.. " scriptItem=" .. tostring(info.scriptItem)
+		.. "; native WornItems guard will prevent a corpse-conversion crash, but fix this item or body-location registration at the source", 2)
+end
+
+local function auditZombieVisuals(zombie, reason)
 	if zombie == nil or not instanceof(zombie, "IsoZombie") then
 		return
 	end
@@ -263,36 +312,21 @@ local function sanitizeZombieVisuals(zombie, reason)
 		return
 	end
 
-	local removed = 0
-	for i = visuals:size() - 1, 0, -1 do
+	for i = 0, visuals:size() - 1 do
 		local visual = visuals:get(i)
 		local info = getVisualInfo(visual)
-		if shouldRemoveVisual(info) then
-			visuals:remove(i)
-			removed = removed + 1
-			if sanitizedVisualCount < sanitizedVisualLogLimit then
-				sanitizedVisualCount = sanitizedVisualCount + 1
-				print("[" .. MOD_ID .. "] removed unsafe zombie visual during " .. tostring(reason)
-					.. " type=" .. tostring(info.fullType)
-					.. " bodyLocation=" .. tostring(info.bodyLocation)
-					.. " canBeEquipped=" .. tostring(info.canBeEquipped)
-					.. " wearLocation=" .. tostring(info.wearLocation)
-					.. " wearKnown=" .. tostring(locationKnown(info.wearLocation)))
-			end
+		if shouldReportVisual(info) then
+			reportUnsafeVisual(info, reason)
 		end
-	end
-
-	if removed > 0 then
-		zombie:resetModelNextFrame()
 	end
 end
 
 local function onWeaponHitCharacter(attacker, target)
-	sanitizeZombieVisuals(target, "OnWeaponHitCharacter")
+	auditZombieVisuals(target, "OnWeaponHitCharacter")
 end
 
 local function onHitZombie(zombie, attacker, bodyPart, weapon)
-	sanitizeZombieVisuals(zombie, "OnHitZombie")
+	auditZombieVisuals(zombie, "OnHitZombie")
 end
 
 function registerCombatHooks()
